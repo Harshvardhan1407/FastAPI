@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, APIRouter
+from fastapi import FastAPI, HTTPException, Depends, APIRouter,Query
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -7,14 +7,16 @@ import uvicorn
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from typing import Annotated
 import os
 from dotenv import load_dotenv
 load_dotenv()
 sql_username = os.getenv("sql_username")
 sql_password = os.getenv("sql_password")
 api_host = os.getenv("api_host")
-api_port = os.getenv("api_port")
-
+api_port = int(os.getenv("api_port"))
+# print(api_host,type(api_host))
+# print(api_port,type(api_port))
 app = FastAPI()
 
 # Database setup
@@ -191,3 +193,19 @@ def delete_user(username: str, db=Depends(get_db)):
     db.delete(user)
     db.commit()
     return {"message": "User deleted successfully"}
+
+@app.post("/weather_data")
+# def weather_ingestion_api(project:str,from_date:datetime,to_date: datetime):
+    # return {f"weather_api{project},{from_date},{to_date}"}
+def weather_ingestion_api():
+    return {"weather_api"}
+# def weather_ingestion_api(
+    # project: Annotated[str, Query(..., description="Project name for the weather data")],
+    # from_date: Annotated[datetime, Query(..., description="Start date in YYYY-MM-DD format")],
+    # to_date: Annotated[datetime, Query(..., description="End date in YYYY-MM-DD format")],
+# ):
+    # Add your logic here
+    # return {
+    #     "message": f"Weather data for project: {project}"
+    #     #, from {from_date}, to {to_date}"
+    # }
