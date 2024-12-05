@@ -1,13 +1,17 @@
 from fastapi import FastAPI, HTTPException, Depends, APIRouter,Query
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
+from pydantic import BaseModel
+import requests
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import uvicorn
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from typing import Annotated
+from typing import Annotated , Optional
+from logger import logger
+from pymongo import MongoClient
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -15,8 +19,8 @@ sql_username = os.getenv("sql_username")
 sql_password = os.getenv("sql_password")
 api_host = os.getenv("api_host")
 api_port = int(os.getenv("api_port"))
-# print(api_host,type(api_host))
-# print(api_port,type(api_port))
+
+# print(f"sql_username :{sql_username}\nsql_password: {sql_password}\napi_host:{api_host}\napi_port:{api_port}\nmongo_host :{mongo_host}\nmongo_port:{mongo_port}\ndatabase: {m_db}\ncollection :{m_collection}")
 app = FastAPI()
 
 # Database setup
@@ -70,8 +74,19 @@ def get_db():
     finally:
         db.close()
 
-
-
+def get_mongodb_conncetion():
+    try:
+        mongo_host = os.getenv("mongo_host")
+        mongo_port = os.getenv("mongo_port")
+        m_db = os.getenv("database")
+        m_collection = os.getenv("collection")
+        client = MongoClient(f"mongodb://{mongo_host}:{mongo_port}/")
+        mongo_db = client[m_db]
+        mongo_collection = mongo_db[m_collection]
+        logger.info(f"mongo connection established")
+        return mongo_collection
+    except Exception as e:
+        logger.error(f"error in mongodb_connection {e}",exc_info= True)
 # # In-memory user storage for simplicity (use a database in production)
 # fake_users_db = {
 #     "harsh": {
@@ -194,18 +209,66 @@ def delete_user(username: str, db=Depends(get_db)):
     db.commit()
     return {"message": "User deleted successfully"}
 
-@app.post("/weather_data")
-# def weather_ingestion_api(project:str,from_date:datetime,to_date: datetime):
-    # return {f"weather_api{project},{from_date},{to_date}"}
-def weather_ingestion_api():
-    return {"weather_api"}
-# def weather_ingestion_api(
-    # project: Annotated[str, Query(..., description="Project name for the weather data")],
-    # from_date: Annotated[datetime, Query(..., description="Start date in YYYY-MM-DD format")],
-    # to_date: Annotated[datetime, Query(..., description="End date in YYYY-MM-DD format")],
-# ):
-    # Add your logic here
-    # return {
-    #     "message": f"Weather data for project: {project}"
-    #     #, from {from_date}, to {to_date}"
-    # }
+# Define a Pydantic model for the request body
+class WeatherRequest(BaseModel):
+    project: Optional[str] = None  # Default value
+    from_date: datetime
+    to_date: datetime
+    site_id: Optional[str] = None
+
+@app.post("/weather_data_ingestion")
+def weather_data_ingestion_fn(weather_api_payload: WeatherRequest,mongo_collection=Depends(get_mongodb_conncetion)):
+    try:
+        project = weather_api_payload.project
+        from_date = weather_api_payload.from_date.date()
+        to_date = weather_api_payload.to_date.date()
+        site_id = weather_api_payload.site_id
+        logger.info(f"weather_api payload project:{project}\nsite_id:{site_id}\nfrom_date: {from_date}\n to_date: {to_date}")
+        if project == "NPCL":
+            latitude, longitude = "28.46072","77.537381" #"28.625361","77.376214"#, 28.628059,77.378912
+            site_id = "NPCL_id"
+
+        url = f"https://archive-api.open-meteo.com/v1/archive?latitude={latitude}&longitude={longitude}&start_date={from_date}&end_date={to_date}&hourly=relative_humidity_2m,apparent_temperature,rain,wind_speed_10m"
+        response = requests.get(url)
+        response.raise_for_status()
+        weather_data = response.json()
+        if weather_data:
+            logger.info(f"Fetched {len(weather_data['hourly']['time'])} records from weather API")
+            # logger.info(f"weather_data fetched :{len(weather_data)}")
+            # return weather_data
+            bulk_insert_data = []
+            for i in range(len(weather_data['hourly']['time'])):
+                hour_data = {
+                    "_id": f"{site_id}_{weather_data['hourly']['time'][i]}",  # MongoDB's unique identifier
+                    "time": weather_data['hourly']['time'][i],
+                    "rain": weather_data['hourly'].get('rain', [])[i],
+                    "relative_humidity_2m": weather_data['hourly'].get('relative_humidity_2m', [])[i],
+                    "apparent_temperature": weather_data['hourly'].get('apparent_temperature', [])[i],
+                    "wind_speed_10m": weather_data['hourly'].get('wind_speed_10m', [])[i],
+                    }
+                bulk_insert_data.append(hour_data)
+            logger.info(f"bulk insert data: {len(bulk_insert_data)}")
+            mongo_collection.insert_many(bulk_insert_data)
+            logger.info(f"Stored weather data in DB from {from_date} to {to_date}")
+        else:
+            logger.warning("No data received from weather API")
+
+        return {"message": "Weather data ingestion completed successfully"}
+    except Exception as e:
+        logger.error(f"Error in weather_data_ingestion_fn: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+@app.post("/fetch_weather_data")
+def weather_data_fetching(weather_api_payload: WeatherRequest,mongo_collection=Depends(get_mongodb_conncetion)):
+    try:
+        from_date = weather_api_payload.from_date.isoformat()
+        to_date = weather_api_payload.to_date.isoformat()
+        query_result = mongo_collection.find(
+            {"time": {"$gte": from_date, "$lt": to_date}}
+        )
+        data = list(query_result)   # data  = [_ for _ in query_result]
+
+        return {"message": "Weather data fetched successfully", "data": data}
+    except Exception as e:
+        logger.error(f"Error in weather data fetching: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
