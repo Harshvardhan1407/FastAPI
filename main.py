@@ -9,12 +9,18 @@ import uvicorn
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from typing import Annotated , Optional
+from typing import Annotated , Optional, Any
 from logger import logger
 from pymongo import MongoClient
+import pandas as pd
+# from tensorflow.keras.models import load_model              # type: ignore
+import pickle
+
 import os
 from dotenv import load_dotenv
 load_dotenv()
+
+
 sql_username = os.getenv("sql_username")
 sql_password = os.getenv("sql_password")
 api_host = os.getenv("api_host")
@@ -36,7 +42,7 @@ app.include_router(router)
 
 @app.post("/")
 def read_root():
-    return {"message": "Hi Harsh!!! API working fine.....!"}
+    return {"message": "Hi Harsh!!! API server working fine.....!"}
 
 
 if __name__ == "__main__":
@@ -87,6 +93,7 @@ def get_mongodb_conncetion():
         return mongo_collection
     except Exception as e:
         logger.error(f"error in mongodb_connection {e}",exc_info= True)
+
 # # In-memory user storage for simplicity (use a database in production)
 # fake_users_db = {
 #     "harsh": {
@@ -94,6 +101,16 @@ def get_mongodb_conncetion():
 #         "hashed_password": "$2b$12$5Nk9yqjzvfp0R.2O.uVbWumAA/m5pSKV2ShnZ4s.jBxtg7g120lgK",
 #     }
 # }
+
+# Load your pre-trained ML model
+MODEL_PATH = os.getenv("MODEL_PATH")
+try:
+    # loaded_model = load_model(MODEL_PATH)
+    # model = joblib.load(MODEL_PATH)
+    logger.info("Model loaded successfully")
+except Exception as e:
+    logger.error(f"Failed to load model: {e}")
+    raise RuntimeError(f"Model loading error: {e}")
 
 # Password hashing setup
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -224,7 +241,7 @@ def weather_data_ingestion_fn(weather_api_payload: WeatherRequest,mongo_collecti
         to_date = weather_api_payload.to_date.date()
         site_id = weather_api_payload.site_id
         logger.info(f"weather_api payload project:{project}\nsite_id:{site_id}\nfrom_date: {from_date}\n to_date: {to_date}")
-        if project == "NPCL":
+        if project.lower() == "npcl":
             latitude, longitude = "28.46072","77.537381" #"28.625361","77.376214"#, 28.628059,77.378912
             site_id = "NPCL_id"
 
@@ -261,14 +278,47 @@ def weather_data_ingestion_fn(weather_api_payload: WeatherRequest,mongo_collecti
 @app.post("/fetch_weather_data")
 def weather_data_fetching(weather_api_payload: WeatherRequest,mongo_collection=Depends(get_mongodb_conncetion)):
     try:
+        project = weather_api_payload.project
         from_date = weather_api_payload.from_date.isoformat()
         to_date = weather_api_payload.to_date.isoformat()
-        query_result = mongo_collection.find(
-            {"time": {"$gte": from_date, "$lt": to_date}}
-        )
+        site_id = weather_api_payload.site_id
+        # print(project,site_id)
+        if project.lower() == "npcl":
+            query_result = mongo_collection.find(
+                {"time": {"$gte": from_date, "$lt": to_date}}
+            )
         data = list(query_result)   # data  = [_ for _ in query_result]
 
-        return {"message": "Weather data fetched successfully", "data": data}
+        return {"message": "Weather data fetched successfully", "data count": len(data), "data": data}
     except Exception as e:
         logger.error(f"Error in weather data fetching: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error: {e}")
+
+# Define a Pydantic model for the request body
+class PredictionRequest(BaseModel):
+    project: Optional[str] = None  # Default value
+    dataset:  Optional[dict] = None
+    site_id: Optional[str] = None
+    from_date: datetime = None
+    to_date: datetime = None
+    
+@app.post("/prediction")
+def predition(prediction_api_payload: PredictionRequest):
+    try:
+        feature_scaler = load_scalar()
+        # print(feature_scaler)
+        return {"message": "Prediction done"}
+    except Exception as e:
+        logger.error(f"Error in weather data fetching: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
+    
+
+def load_scalar():
+    try:
+        # with open('models/Min_Max_Scaler.pkl', 'rb') as f:
+        SCALER_PATH = os.getenv("scaler_path")
+        with open(SCALER_PATH, 'rb') as f:
+            feature_scaler = pickle.load(f)
+        return feature_scaler
+    except Exception as e:
+        logger.error(f"cant load scaler:{e}")
