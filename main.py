@@ -15,6 +15,8 @@ from pymongo import MongoClient
 import pandas as pd
 # from tensorflow.keras.models import load_model              # type: ignore
 import pickle
+import numpy as np
+from scipy.spatial.distance import mahalanobis
 
 import os
 from dotenv import load_dotenv
@@ -322,3 +324,17 @@ def load_scalar():
         return feature_scaler
     except Exception as e:
         logger.error(f"cant load scaler:{e}")
+
+
+# Load precomputed parameters
+
+mean_vector = np.load('Models/anamoly_detection_parameters/mean_value.npy')
+inv_cov_matrix = np.load('Models/anamoly_detection_parameters/inv_cov_matrix.npy')
+threshold = np.load('Models/anamoly_detection_parameters/threshold.npy')
+
+@app.post("/detect_anomaly")
+async def detect_anomaly(data: dict):
+    point = np.array([data['hourly'], data['daily']])
+    distance = mahalanobis(point, mean_vector, inv_cov_matrix)
+    is_anomaly = distance > threshold
+    return {"mahalanobis_distance": distance, "is_anomaly": is_anomaly}
